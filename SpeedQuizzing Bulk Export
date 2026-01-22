@@ -1,0 +1,97 @@
+
+/**
+ * Export details for collected IDs from __sq_scan.ids()
+ * - Fetches preview AND full event page for each ID
+ * - Merges fields and downloads CSV
+ */
+
+(async ()=>{
+  if (!window.__sq_scan || !__sq_scan.ids) { console.warn('Run the scanner first.'); return; }
+  const ids = __sq_scan.ids();
+  if (!ids.length) { console.warn('No IDs collected.'); return; }
+  console.log(`Exporting ${ids.length} events...`);
+
+  const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
+  const esc = (v) => {
+    if (v===null || v===undefined) return "";
+    const s = String(v).replace(/\r?\n/g," ").trim();
+    return /[",]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const getText = (doc, sel) => {
+    const el = doc.querySelector(sel); return el ? el.textContent.trim() : null;
+  };
+  const byRegex = (t,re) => { const m = (t||'').match(re); return m ? (m[1]||m[0]) : null; };
+  const parseUKPostcode = (t) => byRegex(t, /([A-Z]{1,2}\d[\dA-Z]?\s?\d[ABD-HJLNP-UW-Z]{2})/);
+  const parseDateTime = (t) => { const m = (t||'').match(/(\d{1,2}:\d{2}|\d{1,2}\.\d{1,2})\s*•\s*([A-Za-z]+day)\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})/); return {time:m?m[1]:null, repeat_day:m?m[2]:null, date:m?m[3]:null}; };
+  const parseCoordsFromScripts = (doc) => { let lat=null,lng=null; [...doc.querySelectorAll('script')].forEach(s=>{ const t=s.textContent||''; const m=t.match(/lat\s*:\s*([\-0-9\.]+).*?lng\s*:\s*([\-0-9\.]+)/s); if(m){lat=parseFloat(m[1]);lng=parseFloat(m[2]);}}); return {latitude:lat,longitude:lng}; };
+  const parseMicroAddr = (doc) => { const el=doc.querySelector('[itemtype*="PostalAddress"]')||doc.querySelector('[itemprop="address"]'); if(!el) return null; const parts=[getText(el,'[itemprop="streetAddress"]'),getText(el,'[itemprop="addressLocality"]'),getText(el,'[itemprop="postalCode"]')].filter(Boolean); return parts.length?parts.join(', '):null; };
+  const parseHost  = (t) => byRegex(t, /Hosted by\s+([A-Za-z][-A-Za-z ']+)/i);
+  const parsePrice = (t) => byRegex(t, /(£\s?\d+(?:\.\d{2})?\s+to\s+play)/i);
+  const parsePrizes= (t) => byRegex(t, /(Prizes[^,\n]*|Cash)/);
+  const parseAge   = (t) => byRegex(t, /(Age\s*\d+\+?)/i);
+  const parseTeam  = (t) => byRegex(t, /(Max\s*\d+\s*per\s*team)/i);
+
+  const parsePreview = (html,id) => {
+    const doc = new DOMParser().parseFromString(html,'text/html'); const text = doc.body?doc.body.innerText:html;
+    const title = getText(doc,'h1,h2,h3') || null;
+    const dt = parseDateTime(text);
+    return { event_id:id, event_title:title, address: (()=>{
+      const pc=parseUKPostcode(text); if(!pc) return null; const line = (text.split(/\r?\n/).find(l=>l.includes(pc))||'').trim(); return line||null;
+    })(), date:dt.date, time:dt.time, repeat_day:dt.repeat_day, host_name:parseHost(text), price:parsePrice(text), prizes:parsePrizes(text), age_limit:parseAge(text), teams_max:parseTeam(text) };
+  };
+
+  const parsePage = (html,id) => {
+    const doc = new DOMParser().parseFromString(html,'text/html'); const text = doc.body?doc.body.innerText:html;
+    const title = getText(doc,'h1,h2') || (doc.title||'').trim() || null;
+    let venue = null; if (title && title.includes('@')) venue = title.split('@').pop().trim();
+    const vSel = doc.querySelector('.venue, .event-venue, .event__venue, [itemprop="name"]'); if(!venue && vSel) venue = vSel.textContent.trim();
+    const microAddr = parseMicroAddr(doc); const pc=parseUKPostcode(text);
+    const addr = microAddr || getText(doc,'.address, .event-address, [itemprop="address"]') || (pc ? (text.split(/\r?\n/).find(l=>l.includes(pc))||'').trim() : null);
+    const dt = parseDateTime(text); const coords = parseCoordsFromScripts(doc);
+    return { event_id:id, event_title:title, venue_name:venue, address:addr, latitude:coords.latitude, longitude:coords.longitude, date:dt.date, time:dt.time, repeat_day:dt.repeat_day, host_name:parseHost(text), price:parsePrice(text), prizes:parsePrizes(text), age_limit:parseAge(text), teams_max:parseTeam(text) };
+  };
+
+  const rows = [];
+  for (const id of ids){
+    const eventUrl = `https://www.speedquizzing.com/events/${id}/`;
+    let pre=null, page=null;
+    try { const r=await fetch(`/utils/ajax/get_event_preview_ajax/${id}`, {credentials:'same-origin'}); pre=await r.text(); } catch(e){}
+    try { const r=await fetch(eventUrl, {credentials:'same-origin'}); page=await r.text(); } catch(e){}
+    const p1 = pre ? parsePreview(pre,id) : {};
+    const p2 = page ? parsePage(page,id)   : {};
+    const rec = {
+      event_id:id,
+      event_title: p2.event_title || p1.event_title || null,
+      venue_name:  p2.venue_name  || null,
+      address:     p2.address     || p1.address || null,
+      latitude:    p2.latitude    ?? null,
+      longitude:   p2.longitude   ?? null,
+      date:        p2.date        || p1.date || null,
+      time:        p2.time        || p1.time || null,
+      repeat_day:  p2.repeat_day  || p1.repeat_day || null,
+      host_name:   p2.host_name   || p1.host_name || null,
+      price:       p2.price       || p1.price || null,
+      prizes:      p2.prizes      || p1.prizes || null,
+      age_limit:   p2.age_limit   || p1.age_limit || null,
+      teams_max:   p2.teams_max   || p1.teams_max || null,
+      event_url:   eventUrl,
+      source_preview: pre ? 'yes':'no',
+      source_page:   page ? 'yes':'no',
+      notes: null
+    };
+    // fallback venue from title
+    if (!rec.venue_name && rec.event_title && rec.event_title.includes('@')) {
+      rec.venue_name = rec.event_title.split('@').pop().trim();
+    }
+    rows.push(rec);
+    await sleep(120);
+  }
+
+  const headers = ["event_id","event_title","venue_name","address","latitude","longitude","date","time","repeat_day","host_name","price","prizes","age_limit","teams_max","event_url","source_preview","source_page","notes"];
+  const csv = [ headers.join(","), ...rows.map(r => headers.map(h => esc(r[h])).join(",")) ].join("\n");
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = `speedquizzing_events_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
+  document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+  console.log(`Exported ${rows.length} events.`);
+})();
