@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Data Cleaner</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+        }
+        textarea {
+            width: 100%;
+            height: 400px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SpeedQuizzing Events CSV Cleaner</h1>
+        <p>This tool extracts venue names, dates, and times from the address column where they are missing.</p>
+        
+        <input type="file" id="fileInput" accept=".csv">
+        <button onclick="processFile()">Process CSV</button>
+        <button onclick="downloadCSV()" id="downloadBtn" style="display:none;">Download Cleaned CSV</button>
+        
+        <div id="status"></div>
+        
+        <h3>Preview:</h3>
+        <textarea id="preview" readonly></textarea>
+    </div>
+
+    <script>
+        let cleanedData = '';
+        let originalFilename = '';
+
+        function processFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a CSV file first');
+                return;
+            }
+
+            originalFilename = file.name;
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const csvContent = e.target.result;
+                cleanCSV(csvContent);
+            };
+            
+            reader.readAsText(file);
+        }
+
+        function cleanCSV(csvContent) {
+            const lines = csvContent.split('\n');
+            const header = lines[0];
+            const dataLines = lines.slice(1);
+            
+            let cleaned = [header];
+            let processedCount = 0;
+            let repeatDayFilledCount = 0;
+            
+            dataLines.forEach(line => {
+                if (line.trim() === '') return;
+                
+                const row = parseCSVLine(line);
+                if (row.length > 0) {
+                    const cleanedRow = cleanRow(row);
+                    if (cleanedRow.modified) processedCount++;
+                    cleaned.push(rowToCSV(cleanedRow.data));
+                }
+            });
+            
+            // Final step: Fill in missing repeat_day values with weekday from date column
+            const headerRow = parseCSVLine(cleaned[0]);
+            const repeatDayIndex = headerRow.indexOf('repeat_day');
+            const dateIndex = headerRow.indexOf('date');
+            
+            if (repeatDayIndex !== -1 && dateIndex !== -1) {
+                for (let i = 1; i < cleaned.length; i++) {
+                    const row = parseCSVLine(cleaned[i]);
+                    if ((!row[repeatDayIndex] || row[repeatDayIndex].trim() === '') && row[dateIndex] && row[dateIndex].trim() !== '') {
+                        const weekday = getWeekdayFromDate(row[dateIndex]);
+                        if (weekday) {
+                            row[repeatDayIndex] = weekday;
+                            cleaned[i] = rowToCSV(row);
+                            repeatDayFilledCount++;
+                        }
+                    }
+                }
+            }
+            
+            cleanedData = cleaned.join('\n');
+            
+            document.getElementById('preview').value = cleanedData.substring(0, 5000) + '\n\n... (showing first 5000 characters)';
+            document.getElementById('status').innerHTML = `<strong>Processing complete!</strong><br>Processed ${processedCount} rows with missing data.<br>Filled ${repeatDayFilledCount} repeat_day cells with weekday from date.`;
+            document.getElementById('downloadBtn').style.display = 'inline-block';
+        }
+
+        function cleanRow(row) {
+            let modified = false;
+            const [event_id, event_title, venue_name, address, latitude, longitude, date, time, repeat_day, ...rest] = row;
+            
+            // If venue_name, date, or time is empty and address has content
+            if ((!venue_name || !date || !time) && address) {
+                // Extract venue name (text before first comma)
+                let cleanedVenue = venue_name;
+                let cleanedAddress = address;
+                let extractedDate = date;
+                let extractedTime = time;
+                
+                if (!venue_name && address) {
+                    const venueMatch = address.match(/^([^,]+),/);
+                    if (venueMatch) {
+                        cleanedVenue = venueMatch[1].trim();
+                        cleanedAddress = address.substring(venueMatch[0].length).trim();
+                        modified = true;
+                    }
+                }
+                
+                // Extract date (formats like "6 Jan 2026", "25 Jan 2026")
+                if (!date && address) {
+                    const dateMatch = address.match(/(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})/i);
+                    if (dateMatch) {
+                        extractedDate = dateMatch[1];
+                        cleanedAddress = cleanedAddress.replace(dateMatch[0], '').trim();
+                        modified = true;
+                    }
+                }
+                
+                // Extract time (formats like "20:00", "8.00", "7:30pm")
+                if (!time && address) {
+                    const timeMatch = address.match(/(\d{1,2}[:\.]\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)/i);
+                    if (timeMatch) {
+                        extractedTime = timeMatch[1].replace(/\s+/g, '');
+                        cleanedAddress = cleanedAddress.replace(timeMatch[0], '').trim();
+                        modified = true;
+                    }
+                }
+                
+                // Clean up extra spaces and symbols
+                cleanedAddress = cleanedAddress.replace(/\s*•\s*/g, ' ').replace(/\s+/g, ' ').trim();
+                cleanedAddress = cleanedAddress.replace(/^[,\s]+|[,\s]+$/g, '');
+                
+                return {
+                    data: [event_id, event_title, cleanedVenue, cleanedAddress, latitude, longitude, 
+                           extractedDate, extractedTime, repeat_day, ...rest],
+                    modified: modified
+                };
+            }
+            
+            return { data: row, modified: false };
+        }
+
+        function parseCSVLine(line) {
+            const result = [];
+            let current = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+                const nextChar = line[i + 1];
+                
+                if (char === '"') {
+                    if (inQuotes && nextChar === '"') {
+                        current += '"';
+                        i++;
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current);
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            result.push(current);
+            
+            return result;
+        }
+
+        function rowToCSV(row) {
+            return row.map(cell => {
+                if (cell && (cell.includes(',') || cell.includes('"') || cell.includes('\n'))) {
+                    return `"${cell.replace(/"/g, '""')}"`;
+                }
+                return cell;
+            }).join(',');
+        }
+
+        function getWeekdayFromDate(dateString) {
+            const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const date = new Date(dateString);
+            
+            if (isNaN(date.getTime())) {
+                return null;
+            }
+            
+            return weekdays[date.getDay()];
+        }
+
+        function downloadCSV() {
+            const blob = new Blob([cleanedData], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', originalFilename.replace('.csv', '_cleaned.csv'));
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
