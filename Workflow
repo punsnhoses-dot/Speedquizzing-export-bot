@@ -1,0 +1,13 @@
+1.	Export the main bulk of the SpeedQuizzing data by running SpeedQuizzing scanner in the console followed by SpeedQuizzing Bulk Export
+2.	Open SpeedQuizzing Bulk Export Cleaner and input the file that was downloaded in the last step. It will automatically generate a new file with cells split across data fields.
+3.	Run the SpeedQuizzing Enhanced Data Export in the console on the SpeedQuizzing.com/Find site.
+4.	Upload the SpeedQuizzing Enhanced Data Export in the SpeedQuizzing Enhanced Data Export Cleaner which will separate out all the data into its own columns.
+5.	In the soeedquizzing_events_xxxx-xx-xx-xx-xx-xx_cleaned file, do a vlookup in column R on the event ID to locate the venue name in the column j split file. Copy the vlookup and paste as values into the same cells.
+6.	In column S, type the following formula =IF(C2="*",C2,R2) This checks if the event has a venue_name already, if it doesn’t, it will select the new venue name in column r.
+7.	Copy column S and paste as values in column c
+8.	Filter to find any #N/A or 0 and delete these venue_names
+9.	Delete column R and S and save the file.
+10.	Upload the file to Index and click export data for map
+11.	Open the json file that has just been downloaded, copy all the text and paste into the events data file in github. Save the file.
+12.	Refresh the website after 10-15 minutes to confirm upload has been completed.
+
