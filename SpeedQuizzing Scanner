@@ -1,0 +1,93 @@
+
+/**
+ * SpeedQuizzing ID Scanner
+ * - Probes /utils/ajax/get_event_preview_ajax/{id} over a configurable range
+ * - Collects IDs that return non-empty previews
+ * - Saves progress to localStorage so you can pause/resume
+ *
+ * How to run:
+ * 1) Open https://www.speedquizzing.com/find/
+ * 2) DevTools -> Sources -> Snippets -> New snippet -> paste -> Save -> Run
+ * 3) Adjust START_ID / END_ID below to match your needs.
+ */
+
+(function(){
+  // --- CONFIG ---
+  const START_ID = 0;   // set lower bound to scan
+  const END_ID   = 200000;  // set upper bound to scan
+  const CONCURRENCY = 12;   // parallel requests
+  const DELAY_MS   = 10000;  // polite delay between requests per worker
+  const PREVIEW_PATH = (id) => `/utils/ajax/get_event_preview_ajax/${id}`;
+
+  // --- STATE ---
+  const KEY = 'sq_scan_state_v1';
+  let state = JSON.parse(sessionStorage.getItem(KEY) || '{}');
+  if (!state.ids)   state.ids = [];     // collected valid IDs
+  if (!state.next)  state.next = START_ID;
+  if (!state.start) state.start = START_ID;
+  if (!state.end)   state.end = END_ID;
+
+  const save = () => sessionStorage.setItem(KEY, JSON.stringify(state));
+
+  // --- UTILS ---
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const isValidPreview = (text) => {
+    // Treat as valid if there's any meaningful content
+    const t = (text || '').trim();
+    if (!t) return false;
+    // Optional strengthening: look for typical tokens
+    const tokens = ['Hosted by', 'Age', 'Max', '•', 'Wednesday','Thursday','Monday','Tuesday','Friday','Saturday','Sunday'];
+    return t.length > 30 || tokens.some(tok => t.includes(tok));
+  };
+
+  // --- WORKER ---
+  let paused = false;
+  async function worker(name){
+    while (!paused && state.next <= state.end){
+      const id = state.next++;
+      try {
+        const resp = await fetch(PREVIEW_PATH(id), { credentials: 'same-origin' });
+        const text = await resp.text();
+        if (resp.ok && isValidPreview(text)){
+          if (!state.ids.includes(id)) state.ids.push(id);
+          console.log(`[${name}] + valid ${id} (total=${state.ids.length})`);
+        } else {
+          console.log(`[${name}] - empty ${id}`);
+        }
+      } catch(e){
+        console.warn(`[${name}] ! error ${id}: ${e.message}`);
+      }
+      save();
+      await sleep(DELAY_MS);
+    }
+  }
+
+  // --- CONTROL API ---
+  window.__sq_scan = {
+    pause(){ paused = true; console.log('SQ scan paused'); save(); },
+    resume(){ 
+      if (paused) { paused = false; console.log('SQ scan resumed'); }
+      // kick new workers
+      run();
+    },
+    reset(){ 
+      sessionStorage.removeItem(KEY); 
+      state = {ids:[], next:START_ID, start:START_ID, end:END_ID}; 
+      paused = false;
+      console.log('SQ scan reset to 0'); 
+      run();
+    },
+    status(){ console.table({start:state.start, next:state.next, end:state.end, found:state.ids.length}); return {...state}; },
+    ids(){ return [...state.ids].sort((a,b)=>a-b); },
+    setRange(start,end){ state.start=start; state.end=end; state.next=start; save(); console.log('Range set', {start,end}); }
+  };
+
+  async function run(){
+    const workers = Array.from({length: CONCURRENCY}, (_,i)=>worker(`W${i+1}`));
+    await Promise.all(workers);
+    console.log(`Scan finished. Found ${state.ids.length} IDs in [${state.start}, ${state.end}]`);
+  }
+
+  console.log(`Starting scan from ${state.next} to ${state.end} (saved=${state.ids.length} IDs). Controls: __sq_scan.status(), __sq_scan.pause(), __sq_scan.resume(), __sq_scan.ids(), __sq_scan.setRange(start,end), __sq_scan.reset()`);
+  run();
+})();
